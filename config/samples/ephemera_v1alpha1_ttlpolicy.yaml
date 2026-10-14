@@ -1,0 +1,17 @@
+apiVersion: ephemera.dev/v1alpha1
+kind: TTLPolicy
+metadata:
+  name: ephemeral-previews
+spec:
+  # Only namespaces carrying this label are governed. An empty selector matches
+  # nothing on purpose — opt in explicitly.
+  selector:
+    matchLabels:
+      ephemera.dev/ephemeral: "true"
+  # Namespaces are reaped once they are older than this.
+  ttl: 24h
+  # Start in dry-run: the controller logs what it WOULD delete. Flip to false
+  # once you trust it.
+  dryRun: true
+  # Max concurrent deletions.
+  workers: 4
