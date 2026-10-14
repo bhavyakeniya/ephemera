@@ -66,15 +66,20 @@ make vet
 ### Try it on a local cluster
 
 ```sh
-kind create cluster
-make deploy          # installs CRD, RBAC, and the manager
-make sample          # applies an example TTLPolicy (dry-run)
+kind create cluster --name ephemera
+make docker-build                                   # build the image
+kind load docker-image ephemera:latest --name ephemera  # load it into the cluster
+make deploy                                         # CRD, RBAC, and the manager
+make sample                                         # example TTLPolicy (dry-run)
 
 # create a matching namespace and watch the controller track it
 kubectl create namespace preview-42
 kubectl label  namespace preview-42 ephemera.dev/ephemeral=true
 kubectl get ttlpolicy ephemeral-previews -o wide
 ```
+
+The manager runs with `imagePullPolicy: IfNotPresent` so the locally loaded
+image is used instead of being pulled from a registry.
 
 Flip `spec.dryRun` to `false` in the policy to let it actually delete.
 
