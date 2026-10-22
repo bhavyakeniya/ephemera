@@ -50,6 +50,10 @@ func main() {
 		Client:  mgr.GetClient(),
 		Scheme:  mgr.GetScheme(),
 		Metrics: metrics.NewPrometheus(),
+		// Read webhook Secrets directly from the API (uncached), so we need only
+		// "get" on Secrets in our own namespace, not a cluster-wide Secret watch.
+		SecretReader: mgr.GetAPIReader(),
+		Namespace:    os.Getenv("POD_NAMESPACE"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TTLPolicy")
 		os.Exit(1)

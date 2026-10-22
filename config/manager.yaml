@@ -22,6 +22,31 @@ subjects:
     name: ephemera-manager
     namespace: ephemera-system
 ---
+# Namespaced access to webhook Secrets only — deliberately NOT cluster-wide.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ephemera-secret-reader
+  namespace: ephemera-system
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ephemera-secret-reader
+  namespace: ephemera-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ephemera-secret-reader
+subjects:
+  - kind: ServiceAccount
+    name: ephemera-manager
+    namespace: ephemera-system
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -49,6 +74,11 @@ spec:
           args:
             - --metrics-bind-address=:8080
             - --health-probe-bind-address=:8081
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           ports:
             - name: metrics
               containerPort: 8080

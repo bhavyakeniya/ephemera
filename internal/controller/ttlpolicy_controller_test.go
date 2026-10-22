@@ -2,6 +2,11 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -200,6 +205,176 @@ func TestReconcile_RequeueScheduledBeforeDefault(t *testing.T) {
 	res := reconcileOnce(t, c, s, "soon")
 	if res.RequeueAfter <= 0 || res.RequeueAfter >= defaultRequeue {
 		t.Errorf("RequeueAfter = %v, want a short positive duration under %v", res.RequeueAfter, defaultRequeue)
+	}
+}
+
+// --- notification tests ---
+
+// slackServer is a fake Slack webhook capturing the text of every message.
+func slackServer(t *testing.T) (*httptest.Server, *[]string, *sync.Mutex) {
+	t.Helper()
+	var mu sync.Mutex
+	var msgs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		var p map[string]string
+		_ = json.NewDecoder(req.Body).Decode(&p)
+		mu.Lock()
+		msgs = append(msgs, p["text"])
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &msgs, &mu
+}
+
+func webhookSecret(url string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "slack", Namespace: "ephemera-system"},
+		Data:       map[string][]byte{"url": []byte(url)},
+	}
+}
+
+func notifyPolicy(name string, ttl time.Duration, warnBefore time.Duration, cron string) *ephemerav1.TTLPolicy {
+	wb := metav1.Duration{Duration: warnBefore}
+	return &ephemerav1.TTLPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: ephemerav1.TTLPolicySpec{
+			Selector: metav1.LabelSelector{MatchLabels: map[string]string{"ephemeral": "true"}},
+			TTL:      metav1.Duration{Duration: ttl},
+			Notify: &ephemerav1.NotifySpec{
+				SlackWebhookSecretRef: ephemerav1.SecretKeyRef{Name: "slack"},
+				WarnBefore:            &wb,
+				DigestCron:            cron,
+			},
+		},
+	}
+}
+
+// reconcileAt reconciles with a fixed clock.
+func reconcileAt(t *testing.T, c client.Client, s *runtime.Scheme, name string, now time.Time) ctrl.Result {
+	t.Helper()
+	r := &TTLPolicyReconciler{Client: c, Scheme: s, Namespace: "ephemera-system", Now: func() time.Time { return now }}
+	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: name}})
+	if err != nil {
+		t.Fatalf("reconcile error: %v", err)
+	}
+	return res
+}
+
+func countMsgs(mu *sync.Mutex, msgs *[]string, substr string) int {
+	mu.Lock()
+	defer mu.Unlock()
+	n := 0
+	for _, m := range *msgs {
+		if strings.Contains(m, substr) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestReconcile_WarnsOnceWithinWindow(t *testing.T) {
+	srv, msgs, mu := slackServer(t)
+	s := testScheme(t)
+	// TTL 2h, warn 1h before. A namespace created 70m ago is within the window.
+	policy := notifyPolicy("warn", 2*time.Hour, time.Hour, "")
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithStatusSubresource(&ephemerav1.TTLPolicy{}).
+		WithObjects(policy, webhookSecret(srv.URL), ns("preview", 70.0/60.0, map[string]string{"ephemeral": "true"})).
+		Build()
+
+	base := time.Now()
+	reconcileAt(t, c, s, "warn", base)
+	reconcileAt(t, c, s, "warn", base.Add(time.Minute)) // second pass, still in window
+
+	if got := countMsgs(mu, msgs, "will be reaped"); got != 1 {
+		t.Errorf("warning sent %d times, want exactly 1", got)
+	}
+	var got ephemerav1.TTLPolicy
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "warn"}, &got)
+	if len(got.Status.Warned) != 1 || got.Status.Warned[0] != "preview" {
+		t.Errorf("status.Warned = %v, want [preview]", got.Status.Warned)
+	}
+}
+
+func TestReconcile_NoWarnWhenWindowExceedsTTL(t *testing.T) {
+	srv, msgs, mu := slackServer(t)
+	s := testScheme(t)
+	// warnBefore (24h default) >= TTL (15s): no distinct pre-expiry phase.
+	policy := notifyPolicy("short", 15*time.Second, 24*time.Hour, "")
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithStatusSubresource(&ephemerav1.TTLPolicy{}).
+		WithObjects(policy, webhookSecret(srv.URL), ns("preview", 0.001, map[string]string{"ephemeral": "true"})).
+		Build()
+
+	reconcileAt(t, c, s, "short", time.Now())
+	if got := countMsgs(mu, msgs, "will be reaped"); got != 0 {
+		t.Errorf("warnings sent %d, want 0 (window >= TTL)", got)
+	}
+}
+
+func TestReconcile_NotifiesOnReap(t *testing.T) {
+	srv, msgs, mu := slackServer(t)
+	s := testScheme(t)
+	policy := notifyPolicy("reap", time.Hour, 30*time.Minute, "")
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithStatusSubresource(&ephemerav1.TTLPolicy{}).
+		WithObjects(policy, webhookSecret(srv.URL), ns("doomed", 3, map[string]string{"ephemeral": "true"})).
+		Build()
+
+	reconcileAt(t, c, s, "reap", time.Now())
+
+	if nsExists(t, c, "doomed") {
+		t.Error("expired namespace should have been reaped")
+	}
+	if got := countMsgs(mu, msgs, "Reaped namespace"); got != 1 {
+		t.Errorf("reaped notifications = %d, want 1", got)
+	}
+}
+
+func TestReconcile_DigestFiresWhenDueWithCounts(t *testing.T) {
+	srv, msgs, mu := slackServer(t)
+	s := testScheme(t)
+	// Fire every minute so the test can cross a boundary deterministically.
+	policy := notifyPolicy("digest", 2*time.Hour, time.Hour, "* * * * *")
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithStatusSubresource(&ephemerav1.TTLPolicy{}).
+		WithObjects(policy, webhookSecret(srv.URL),
+			ns("soon", 70.0/60.0, map[string]string{"ephemeral": "true"})). // expires in ~50m -> within 24h
+		Build()
+
+	// Use the real clock as the base so the namespace's creation timestamp
+	// (set via ns(), which uses time.Now) and the digest window agree.
+	base := time.Now()
+	reconcileAt(t, c, s, "digest", base)                     // seeds LastDigestTime, no fire
+	reconcileAt(t, c, s, "digest", base.Add(90*time.Second)) // crosses a minute boundary -> fires
+
+	if got := countMsgs(mu, msgs, "ephemera digest"); got != 1 {
+		t.Fatalf("digest messages = %d, want 1", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var digest string
+	for _, m := range *msgs {
+		if strings.Contains(m, "ephemera digest") {
+			digest = m
+		}
+	}
+	if !strings.Contains(digest, "1 expiring in the next 24h") {
+		t.Errorf("digest = %q, want 1 expiring soon", digest)
+	}
+}
+
+func TestPruneReapsBefore(t *testing.T) {
+	now := time.Now()
+	in := []metav1.Time{
+		{Time: now.Add(-48 * time.Hour)}, // old, dropped
+		{Time: now.Add(-1 * time.Hour)},  // kept
+		{Time: now.Add(-23 * time.Hour)}, // kept
+	}
+	out := pruneReapsBefore(in, now.Add(-digestWindow))
+	if len(out) != 2 {
+		t.Errorf("pruned to %d, want 2", len(out))
 	}
 }
 

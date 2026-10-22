@@ -16,16 +16,18 @@ type Config struct {
 	DryRun     bool          // if true, log intent but never delete
 	Logger     *slog.Logger  // defaults to slog.Default()
 	Metrics    Metrics       // defaults to a no-op
+	Notifier   Notifier      // defaults to a no-op; notified after a real delete
 }
 
 // Reaper deletes expired resources using a bounded worker pool.
 type Reaper struct {
-	client  ResourceClient
-	workers int
-	timeout time.Duration
-	dryRun  bool
-	log     *slog.Logger
-	metrics Metrics
+	client   ResourceClient
+	workers  int
+	timeout  time.Duration
+	dryRun   bool
+	log      *slog.Logger
+	metrics  Metrics
+	notifier Notifier
 }
 
 // New builds a Reaper, filling in defaults for any zero-valued Config field.
@@ -42,13 +44,17 @@ func New(client ResourceClient, cfg Config) *Reaper {
 	if cfg.Metrics == nil {
 		cfg.Metrics = nopMetrics{}
 	}
+	if cfg.Notifier == nil {
+		cfg.Notifier = nopNotifier{}
+	}
 	return &Reaper{
-		client:  client,
-		workers: cfg.Workers,
-		timeout: cfg.JobTimeout,
-		dryRun:  cfg.DryRun,
-		log:     cfg.Logger,
-		metrics: cfg.Metrics,
+		client:   client,
+		workers:  cfg.Workers,
+		timeout:  cfg.JobTimeout,
+		dryRun:   cfg.DryRun,
+		log:      cfg.Logger,
+		metrics:  cfg.Metrics,
+		notifier: cfg.Notifier,
 	}
 }
 
@@ -149,5 +155,7 @@ func (r *Reaper) reapOne(ctx context.Context, res Resource) error {
 	}
 	r.metrics.IncReaped()
 	r.log.Info("reaped", "id", res.ID)
+	// Fire-and-forget: a notification failure must not fail the reap.
+	r.notifier.Reaped(ctx, res.ID)
 	return nil
 }

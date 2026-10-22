@@ -62,10 +62,46 @@ spec:
                 description: DryRun, when true, logs and reports what would be reaped
                   without deleting.
                 type: boolean
+              notify:
+                description: |-
+                  Notify configures optional Slack notifications. When nil, notifications
+                  are off and behaviour is unchanged.
+                properties:
+                  digestCron:
+                    description: |-
+                      DigestCron is a standard 5-field cron expression (e.g. "0 9 * * 1-5") for
+                      a periodic summary of this policy. Empty disables the digest.
+                    type: string
+                  slackWebhookSecretRef:
+                    description: |-
+                      SlackWebhookSecretRef points at a Secret (in the controller's own
+                      namespace) holding a Slack Incoming Webhook URL. The URL is a secret and
+                      is never stored in the policy spec directly.
+                    properties:
+                      key:
+                        description: Key within the Secret's data. Defaults to "url"
+                          when empty.
+                        type: string
+                      name:
+                        description: Name of the Secret.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  warnBefore:
+                    description: |-
+                      WarnBefore sends a heads-up this long before a namespace is reaped.
+                      Defaults to 24h. The warning is skipped entirely when WarnBefore is >=
+                      the policy TTL, since there is then no distinct pre-expiry window.
+                    type: string
+                required:
+                - slackWebhookSecretRef
+                type: object
               selector:
                 description: |-
-                  Selector picks the namespaces this policy governs. An empty selector
-                  matches nothing (fail-safe) — you must opt namespaces in explicitly.
+                  Selector picks the namespaces this policy governs. An empty selector is
+                  rejected (the policy is marked NotReady and nothing is reaped) rather than
+                  matching everything — you must opt namespaces in explicitly.
                 properties:
                   matchExpressions:
                     description: matchExpressions is a list of label selector requirements.
@@ -188,6 +224,10 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              lastDigestTime:
+                description: LastDigestTime is when the periodic digest was last sent.
+                format: date-time
+                type: string
               lastReapTime:
                 description: LastReapTime is when the controller last ran a reap pass
                   for this policy.
@@ -197,10 +237,25 @@ spec:
                 description: Reaped is the cumulative count of namespaces reaped by
                   this policy.
                 type: integer
+              recentReaps:
+                description: |-
+                  RecentReaps holds reap timestamps within the last 24h, used to report
+                  "expired in the last 24h" in the digest. It is pruned each reconcile.
+                items:
+                  format: date-time
+                  type: string
+                type: array
               tracked:
                 description: Tracked is the number of namespaces currently matched
                   by the selector.
                 type: integer
+              warned:
+                description: |-
+                  Warned lists namespaces already sent a pre-expiry warning, so the warning
+                  is sent at most once. Pruned to currently-tracked namespaces.
+                items:
+                  type: string
+                type: array
             type: object
         type: object
     served: true

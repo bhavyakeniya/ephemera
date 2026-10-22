@@ -24,6 +24,39 @@ type TTLPolicySpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	Workers *int `json:"workers,omitempty"`
+
+	// Notify configures optional Slack notifications. When nil, notifications
+	// are off and behaviour is unchanged.
+	// +optional
+	Notify *NotifySpec `json:"notify,omitempty"`
+}
+
+// NotifySpec configures Slack notifications for a policy.
+type NotifySpec struct {
+	// SlackWebhookSecretRef points at a Secret (in the controller's own
+	// namespace) holding a Slack Incoming Webhook URL. The URL is a secret and
+	// is never stored in the policy spec directly.
+	SlackWebhookSecretRef SecretKeyRef `json:"slackWebhookSecretRef"`
+
+	// WarnBefore sends a heads-up this long before a namespace is reaped.
+	// Defaults to 24h. The warning is skipped entirely when WarnBefore is >=
+	// the policy TTL, since there is then no distinct pre-expiry window.
+	// +optional
+	WarnBefore *metav1.Duration `json:"warnBefore,omitempty"`
+
+	// DigestCron is a standard 5-field cron expression (e.g. "0 9 * * 1-5") for
+	// a periodic summary of this policy. Empty disables the digest.
+	// +optional
+	DigestCron string `json:"digestCron,omitempty"`
+}
+
+// SecretKeyRef references a single key within a Secret.
+type SecretKeyRef struct {
+	// Name of the Secret.
+	Name string `json:"name"`
+	// Key within the Secret's data. Defaults to "url" when empty.
+	// +optional
+	Key string `json:"key,omitempty"`
 }
 
 // TTLPolicyStatus reports the last observed reaping state.
@@ -46,6 +79,20 @@ type TTLPolicyStatus struct {
 	// LastReapTime is when the controller last ran a reap pass for this policy.
 	// +optional
 	LastReapTime *metav1.Time `json:"lastReapTime,omitempty"`
+
+	// RecentReaps holds reap timestamps within the last 24h, used to report
+	// "expired in the last 24h" in the digest. It is pruned each reconcile.
+	// +optional
+	RecentReaps []metav1.Time `json:"recentReaps,omitempty"`
+
+	// Warned lists namespaces already sent a pre-expiry warning, so the warning
+	// is sent at most once. Pruned to currently-tracked namespaces.
+	// +optional
+	Warned []string `json:"warned,omitempty"`
+
+	// LastDigestTime is when the periodic digest was last sent.
+	// +optional
+	LastDigestTime *metav1.Time `json:"lastDigestTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
