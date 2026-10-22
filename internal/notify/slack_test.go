@@ -86,6 +86,20 @@ func TestDigest_IncludesCounts(t *testing.T) {
 	}
 }
 
+func TestPost_ErrorDoesNotLeakWebhookURL(t *testing.T) {
+	// Point at a closed port so Do() fails with a *url.Error that embeds the URL.
+	const token = "S3CR3T-TOKEN-xyz"
+	s := NewSlack("http://127.0.0.1:1/services/"+token, quiet())
+
+	err := s.Warn(context.Background(), "x", time.Now())
+	if err == nil {
+		t.Fatal("expected a transport error")
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Fatalf("error leaks the secret webhook token: %q", err.Error())
+	}
+}
+
 func TestPost_Non200IsError(t *testing.T) {
 	srv, _ := capture(t, http.StatusForbidden)
 	s := NewSlack(srv.URL, quiet())

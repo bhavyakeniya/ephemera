@@ -8,9 +8,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -39,6 +41,18 @@ func NewSlack(webhookURL string, log *slog.Logger) *Slack {
 	}
 }
 
+// redactURL strips the URL out of a *url.Error. A Slack webhook URL is a
+// credential (the token is in the path), and net/http embeds the full URL in
+// *url.Error messages — which then end up in logs. Unwrapping to the underlying
+// cause keeps the token out of error text while preserving the real failure.
+func redactURL(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err
+	}
+	return err
+}
+
 // post sends a plain-text Slack message.
 func (s *Slack) post(ctx context.Context, text string) error {
 	body, err := json.Marshal(map[string]string{"text": text})
@@ -47,12 +61,12 @@ func (s *Slack) post(ctx context.Context, text string) error {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.webhookURL, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("building slack request: %w", err)
+		return fmt.Errorf("building slack request: %w", redactURL(err))
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("posting to slack: %w", err)
+		return fmt.Errorf("posting to slack: %w", redactURL(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

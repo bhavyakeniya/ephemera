@@ -103,9 +103,12 @@ func (r *TTLPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	now := r.clock()
 
-	// Resolve the optional Slack client from the referenced Secret.
+	// Resolve the optional Slack client from the referenced Secret. Dry-run is
+	// completely silent: sending "will be reaped" / "reaped" messages when
+	// nothing is actually deleted would be misleading, so we skip notifications
+	// (and the Secret read) entirely while DryRun is true.
 	var slack *notify.Slack
-	if policy.Spec.Notify != nil {
+	if policy.Spec.Notify != nil && !policy.Spec.DryRun {
 		url, err := r.webhookURL(ctx, policy.Spec.Notify.SlackWebhookSecretRef)
 		if err != nil {
 			// The Secret may not exist yet; record and requeue.

@@ -365,6 +365,33 @@ func TestReconcile_DigestFiresWhenDueWithCounts(t *testing.T) {
 	}
 }
 
+func TestReconcile_DryRunSuppressesAllNotifications(t *testing.T) {
+	srv, msgs, mu := slackServer(t)
+	s := testScheme(t)
+	policy := notifyPolicy("dry-notify", time.Hour, 30*time.Minute, "* * * * *")
+	policy.Spec.DryRun = true
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithStatusSubresource(&ephemerav1.TTLPolicy{}).
+		WithObjects(policy, webhookSecret(srv.URL),
+			ns("doomed", 3, map[string]string{"ephemeral": "true"}),          // expired
+			ns("warnme", 55.0/60.0, map[string]string{"ephemeral": "true"})). // in warn window
+		Build()
+
+	base := time.Now()
+	reconcileAt(t, c, s, "dry-notify", base)
+	reconcileAt(t, c, s, "dry-notify", base.Add(90*time.Second))
+
+	mu.Lock()
+	n := len(*msgs)
+	mu.Unlock()
+	if n != 0 {
+		t.Errorf("dry-run sent %d Slack messages, want 0", n)
+	}
+	if !nsExists(t, c, "doomed") {
+		t.Error("dry-run must not actually reap")
+	}
+}
+
 func TestPruneReapsBefore(t *testing.T) {
 	now := time.Now()
 	in := []metav1.Time{

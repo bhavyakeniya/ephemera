@@ -31,7 +31,9 @@ type TTLPolicySpec struct {
 	Notify *NotifySpec `json:"notify,omitempty"`
 }
 
-// NotifySpec configures Slack notifications for a policy.
+// NotifySpec configures Slack notifications for a policy. Notifications are
+// suppressed entirely while the policy is in DryRun, since nothing is actually
+// reaped then.
 type NotifySpec struct {
 	// SlackWebhookSecretRef points at a Secret (in the controller's own
 	// namespace) holding a Slack Incoming Webhook URL. The URL is a secret and
