@@ -45,6 +45,16 @@ func (r *TTLPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// An empty LabelSelector resolves to labels.Everything(), which would match
+	// every namespace in the cluster and reap them all — the opposite of safe,
+	// and the opposite of what this field is documented to do. Require an
+	// explicit selector and refuse to act on an empty one.
+	if len(policy.Spec.Selector.MatchLabels) == 0 && len(policy.Spec.Selector.MatchExpressions) == 0 {
+		r.setReady(ctx, &policy, false, "EmptySelector",
+			"spec.selector is empty; refusing to match all namespaces")
+		return ctrl.Result{}, nil
+	}
+
 	selector, err := metav1.LabelSelectorAsSelector(&policy.Spec.Selector)
 	if err != nil {
 		// A malformed selector is a user error; record it but don't hot-loop.

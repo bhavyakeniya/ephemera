@@ -148,6 +148,39 @@ func TestReconcile_DryRunReapsNothing(t *testing.T) {
 	}
 }
 
+func TestReconcile_EmptySelectorReapsNothing(t *testing.T) {
+	s := testScheme(t)
+	// No selector set: an empty LabelSelector would resolve to Everything().
+	policy := &ephemerav1.TTLPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "oops"},
+		Spec: ephemerav1.TTLPolicySpec{
+			TTL:    metav1.Duration{Duration: time.Hour},
+			DryRun: false,
+		},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithStatusSubresource(&ephemerav1.TTLPolicy{}).
+		WithObjects(policy, ns("old-unlabeled", 3, nil)). // expired, no labels
+		Build()
+
+	reconcileOnce(t, c, s, "oops")
+
+	if !nsExists(t, c, "old-unlabeled") {
+		t.Fatal("empty selector must NOT reap any namespace")
+	}
+	var got ephemerav1.TTLPolicy
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "oops"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if meta_FindReady(got.Status.Conditions) != metav1.ConditionFalse {
+		t.Error("policy with empty selector must be marked NotReady")
+	}
+	if got.Status.Reaped != 0 {
+		t.Errorf("status.Reaped = %d, want 0", got.Status.Reaped)
+	}
+}
+
 func TestReconcile_RequeueScheduledBeforeDefault(t *testing.T) {
 	s := testScheme(t)
 	policy := &ephemerav1.TTLPolicy{

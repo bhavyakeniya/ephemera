@@ -6,8 +6,9 @@ import (
 
 // TTLPolicySpec defines which namespaces to watch and how long they may live.
 type TTLPolicySpec struct {
-	// Selector picks the namespaces this policy governs. An empty selector
-	// matches nothing (fail-safe) — you must opt namespaces in explicitly.
+	// Selector picks the namespaces this policy governs. An empty selector is
+	// rejected (the policy is marked NotReady and nothing is reaped) rather than
+	// matching everything — you must opt namespaces in explicitly.
 	Selector metav1.LabelSelector `json:"selector"`
 
 	// TTL is how long after a namespace's creation it may live before reaping.
