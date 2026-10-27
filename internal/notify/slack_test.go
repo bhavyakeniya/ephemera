@@ -100,6 +100,17 @@ func TestPost_ErrorDoesNotLeakWebhookURL(t *testing.T) {
 	}
 }
 
+func TestPost_RejectsRedirect(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://example.com/elsewhere", http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+	s := NewSlack(srv.URL, quiet())
+	if err := s.Warn(context.Background(), "x", time.Now()); err == nil {
+		t.Fatal("redirect must be rejected, not followed and reported as success")
+	}
+}
+
 func TestPost_Non200IsError(t *testing.T) {
 	srv, _ := capture(t, http.StatusForbidden)
 	s := NewSlack(srv.URL, quiet())

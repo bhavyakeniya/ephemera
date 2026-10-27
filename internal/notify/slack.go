@@ -36,8 +36,17 @@ func NewSlack(webhookURL string, log *slog.Logger) *Slack {
 	}
 	return &Slack{
 		webhookURL: webhookURL,
-		http:       &http.Client{Timeout: 10 * time.Second},
-		log:        log,
+		http: &http.Client{
+			Timeout: 10 * time.Second,
+			// Don't follow redirects: a real Slack webhook never redirects, and
+			// following one could deliver the payload to an arbitrary host and
+			// report a 200 from there as success. Returning the 3xx response
+			// unfollowed makes the status check below reject it.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+		log: log,
 	}
 }
 
