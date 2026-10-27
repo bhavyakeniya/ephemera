@@ -27,6 +27,14 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27'
-      - uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
+      # golangci-lint is intentionally omitted: its action's version resolver
+      # pins a linter built against an older Go toolchain that can't analyze
+      # this module's Go version. gofmt + vet give a reliable signal without
+      # the version-compatibility roulette. Re-add golangci-lint with an
+      # explicitly pinned, Go-compatible action/linter pair when available.
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then echo "gofmt needed on:"; echo "$unformatted"; exit 1; fi
+      - name: go vet
+        run: go vet ./...

@@ -35,6 +35,8 @@ func testScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
+func boolp(b bool) *bool { return &b }
+
 func ns(name string, ageHours float64, labels map[string]string) *corev1.Namespace {
 	return &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
@@ -78,9 +80,9 @@ func TestReconcile_ReapsExpiredMatchingNamespaces(t *testing.T) {
 	policy := &ephemerav1.TTLPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "ephemeral"},
 		Spec: ephemerav1.TTLPolicySpec{
-			Selector: metav1.LabelSelector{MatchLabels: map[string]string{"ephemeral": "true"}},
+			Selector: metav1.LabelSelector{MatchLabels: map[string]string{"ephemera.dev/ephemeral": "true"}},
 			TTL:      metav1.Duration{Duration: time.Hour},
-			DryRun:   false,
+			DryRun:   boolp(false),
 		},
 	}
 	c := fake.NewClientBuilder().
@@ -88,10 +90,10 @@ func TestReconcile_ReapsExpiredMatchingNamespaces(t *testing.T) {
 		WithStatusSubresource(&ephemerav1.TTLPolicy{}).
 		WithObjects(
 			policy,
-			ns("old-match", 3, map[string]string{"ephemeral": "true"}),     // expired + matches -> reap
-			ns("fresh-match", 0.1, map[string]string{"ephemeral": "true"}), // matches but not expired
-			ns("old-nomatch", 3, map[string]string{"keep": "yes"}),         // expired but no match
-			ns("kube-system", 100, map[string]string{"ephemeral": "true"}), // protected
+			ns("old-match", 3, map[string]string{"ephemera.dev/ephemeral": "true"}),     // expired + matches -> reap
+			ns("fresh-match", 0.1, map[string]string{"ephemera.dev/ephemeral": "true"}), // matches but not expired
+			ns("old-nomatch", 3, map[string]string{"keep": "yes"}),                      // expired but no match
+			ns("kube-system", 100, map[string]string{"ephemera.dev/ephemeral": "true"}), // protected
 		).
 		Build()
 
@@ -130,15 +132,15 @@ func TestReconcile_DryRunReapsNothing(t *testing.T) {
 	policy := &ephemerav1.TTLPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "dry"},
 		Spec: ephemerav1.TTLPolicySpec{
-			Selector: metav1.LabelSelector{MatchLabels: map[string]string{"ephemeral": "true"}},
+			Selector: metav1.LabelSelector{MatchLabels: map[string]string{"ephemera.dev/ephemeral": "true"}},
 			TTL:      metav1.Duration{Duration: time.Hour},
-			DryRun:   true,
+			DryRun:   boolp(true),
 		},
 	}
 	c := fake.NewClientBuilder().
 		WithScheme(s).
 		WithStatusSubresource(&ephemerav1.TTLPolicy{}).
-		WithObjects(policy, ns("old-match", 3, map[string]string{"ephemeral": "true"})).
+		WithObjects(policy, ns("old-match", 3, map[string]string{"ephemera.dev/ephemeral": "true"})).
 		Build()
 
 	reconcileOnce(t, c, s, "dry")
@@ -160,7 +162,7 @@ func TestReconcile_EmptySelectorReapsNothing(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "oops"},
 		Spec: ephemerav1.TTLPolicySpec{
 			TTL:    metav1.Duration{Duration: time.Hour},
-			DryRun: false,
+			DryRun: boolp(false),
 		},
 	}
 	c := fake.NewClientBuilder().
@@ -191,7 +193,7 @@ func TestReconcile_RequeueScheduledBeforeDefault(t *testing.T) {
 	policy := &ephemerav1.TTLPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "soon"},
 		Spec: ephemerav1.TTLPolicySpec{
-			Selector: metav1.LabelSelector{MatchLabels: map[string]string{"ephemeral": "true"}},
+			Selector: metav1.LabelSelector{MatchLabels: map[string]string{"ephemera.dev/ephemeral": "true"}},
 			TTL:      metav1.Duration{Duration: time.Hour},
 		},
 	}
@@ -199,7 +201,7 @@ func TestReconcile_RequeueScheduledBeforeDefault(t *testing.T) {
 		WithScheme(s).
 		WithStatusSubresource(&ephemerav1.TTLPolicy{}).
 		// created 59.5m ago, TTL 1h -> expires in ~30s, well under defaultRequeue
-		WithObjects(policy, ns("almost", 59.5/60.0, map[string]string{"ephemeral": "true"})).
+		WithObjects(policy, ns("almost", 59.5/60.0, map[string]string{"ephemera.dev/ephemeral": "true"})).
 		Build()
 
 	res := reconcileOnce(t, c, s, "soon")
@@ -239,8 +241,9 @@ func notifyPolicy(name string, ttl time.Duration, warnBefore time.Duration, cron
 	return &ephemerav1.TTLPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: ephemerav1.TTLPolicySpec{
-			Selector: metav1.LabelSelector{MatchLabels: map[string]string{"ephemeral": "true"}},
+			Selector: metav1.LabelSelector{MatchLabels: map[string]string{"ephemera.dev/ephemeral": "true"}},
 			TTL:      metav1.Duration{Duration: ttl},
+			DryRun:   boolp(false), // notifications only fire when not dry-run
 			Notify: &ephemerav1.NotifySpec{
 				SlackWebhookSecretRef: ephemerav1.SecretKeyRef{Name: "slack"},
 				WarnBefore:            &wb,
@@ -280,7 +283,7 @@ func TestReconcile_WarnsOnceWithinWindow(t *testing.T) {
 	policy := notifyPolicy("warn", 2*time.Hour, time.Hour, "")
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithStatusSubresource(&ephemerav1.TTLPolicy{}).
-		WithObjects(policy, webhookSecret(srv.URL), ns("preview", 70.0/60.0, map[string]string{"ephemeral": "true"})).
+		WithObjects(policy, webhookSecret(srv.URL), ns("preview", 70.0/60.0, map[string]string{"ephemera.dev/ephemeral": "true"})).
 		Build()
 
 	base := time.Now()
@@ -304,7 +307,7 @@ func TestReconcile_NoWarnWhenWindowExceedsTTL(t *testing.T) {
 	policy := notifyPolicy("short", 15*time.Second, 24*time.Hour, "")
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithStatusSubresource(&ephemerav1.TTLPolicy{}).
-		WithObjects(policy, webhookSecret(srv.URL), ns("preview", 0.001, map[string]string{"ephemeral": "true"})).
+		WithObjects(policy, webhookSecret(srv.URL), ns("preview", 0.001, map[string]string{"ephemera.dev/ephemeral": "true"})).
 		Build()
 
 	reconcileAt(t, c, s, "short", time.Now())
@@ -319,7 +322,7 @@ func TestReconcile_NotifiesOnReap(t *testing.T) {
 	policy := notifyPolicy("reap", time.Hour, 30*time.Minute, "")
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithStatusSubresource(&ephemerav1.TTLPolicy{}).
-		WithObjects(policy, webhookSecret(srv.URL), ns("doomed", 3, map[string]string{"ephemeral": "true"})).
+		WithObjects(policy, webhookSecret(srv.URL), ns("doomed", 3, map[string]string{"ephemera.dev/ephemeral": "true"})).
 		Build()
 
 	reconcileAt(t, c, s, "reap", time.Now())
@@ -340,7 +343,7 @@ func TestReconcile_DigestFiresWhenDueWithCounts(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithStatusSubresource(&ephemerav1.TTLPolicy{}).
 		WithObjects(policy, webhookSecret(srv.URL),
-			ns("soon", 70.0/60.0, map[string]string{"ephemeral": "true"})). // expires in ~50m -> within 24h
+			ns("soon", 70.0/60.0, map[string]string{"ephemera.dev/ephemeral": "true"})). // expires in ~50m -> within 24h
 		Build()
 
 	// Use the real clock as the base so the namespace's creation timestamp
@@ -369,12 +372,12 @@ func TestReconcile_DryRunSuppressesAllNotifications(t *testing.T) {
 	srv, msgs, mu := slackServer(t)
 	s := testScheme(t)
 	policy := notifyPolicy("dry-notify", time.Hour, 30*time.Minute, "* * * * *")
-	policy.Spec.DryRun = true
+	policy.Spec.DryRun = boolp(true)
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithStatusSubresource(&ephemerav1.TTLPolicy{}).
 		WithObjects(policy, webhookSecret(srv.URL),
-			ns("doomed", 3, map[string]string{"ephemeral": "true"}),          // expired
-			ns("warnme", 55.0/60.0, map[string]string{"ephemeral": "true"})). // in warn window
+			ns("doomed", 3, map[string]string{"ephemera.dev/ephemeral": "true"}),          // expired
+			ns("warnme", 55.0/60.0, map[string]string{"ephemera.dev/ephemeral": "true"})). // in warn window
 		Build()
 
 	base := time.Now()
@@ -389,6 +392,56 @@ func TestReconcile_DryRunSuppressesAllNotifications(t *testing.T) {
 	}
 	if !nsExists(t, c, "doomed") {
 		t.Error("dry-run must not actually reap")
+	}
+}
+
+func TestReconcile_RejectsNonPositiveTTL(t *testing.T) {
+	s := testScheme(t)
+	for _, ttl := range []time.Duration{0, -time.Hour} {
+		policy := &ephemerav1.TTLPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "badttl"},
+			Spec: ephemerav1.TTLPolicySpec{
+				Selector: metav1.LabelSelector{MatchLabels: map[string]string{"ephemera.dev/ephemeral": "true"}},
+				TTL:      metav1.Duration{Duration: ttl},
+				DryRun:   boolp(false),
+			},
+		}
+		c := fake.NewClientBuilder().WithScheme(s).
+			WithStatusSubresource(&ephemerav1.TTLPolicy{}).
+			WithObjects(policy, ns("fresh", 0.01, map[string]string{"ephemera.dev/ephemeral": "true"})).
+			Build()
+
+		reconcileOnce(t, c, s, "badttl")
+
+		if !nsExists(t, c, "fresh") {
+			t.Errorf("ttl=%v: a non-positive TTL must reap nothing", ttl)
+		}
+		var got ephemerav1.TTLPolicy
+		_ = c.Get(context.Background(), types.NamespacedName{Name: "badttl"}, &got)
+		if meta_FindReady(got.Status.Conditions) != metav1.ConditionFalse {
+			t.Errorf("ttl=%v: policy must be marked NotReady", ttl)
+		}
+	}
+}
+
+func TestReconcile_NilDryRunDefaultsToDryRun(t *testing.T) {
+	s := testScheme(t)
+	policy := &ephemerav1.TTLPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "defdry"},
+		Spec: ephemerav1.TTLPolicySpec{
+			Selector: metav1.LabelSelector{MatchLabels: map[string]string{"ephemera.dev/ephemeral": "true"}},
+			TTL:      metav1.Duration{Duration: time.Hour},
+			// DryRun nil: must default to dry-run (safe), reaping nothing.
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithStatusSubresource(&ephemerav1.TTLPolicy{}).
+		WithObjects(policy, ns("old", 3, map[string]string{"ephemera.dev/ephemeral": "true"})).
+		Build()
+
+	reconcileOnce(t, c, s, "defdry")
+	if !nsExists(t, c, "old") {
+		t.Error("nil DryRun must default to dry-run and reap nothing")
 	}
 }
 

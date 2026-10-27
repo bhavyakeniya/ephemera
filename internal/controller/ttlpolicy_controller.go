@@ -19,6 +19,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	ephemerav1 "github.com/bhavyakeniya/ephemera/api/v1alpha1"
 	"github.com/bhavyakeniya/ephemera/internal/k8s"
@@ -71,6 +72,14 @@ func (r *TTLPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Defensive TTL validation. Admission (a CEL rule) should already reject
+	// non-positive TTLs, but a zero or negative TTL would make every matching
+	// namespace "expired" instantly, so never act on one.
+	if policy.Spec.TTL.Duration <= 0 {
+		r.setReady(ctx, &policy, false, "InvalidTTL", "spec.ttl must be a positive duration")
+		return ctrl.Result{}, nil
+	}
+
 	// An empty LabelSelector resolves to labels.Everything(), which would match
 	// every namespace in the cluster and reap them all — the opposite of safe,
 	// and the opposite of what this field is documented to do. Require an
@@ -93,7 +102,10 @@ func (r *TTLPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		workers = *policy.Spec.Workers
 	}
 
-	nsClient := k8s.NewNamespaceClient(r.Client, selector, policy.Spec.TTL.Duration)
+	// DryRun defaults to true; the pointer lets a client send an explicit false.
+	dryRun := policy.Spec.DryRun == nil || *policy.Spec.DryRun
+
+	nsClient := k8s.NewNamespaceClient(r.Client, selector, policy.Spec.TTL.Duration, r.Namespace)
 
 	resources, err := nsClient.List(ctx)
 	if err != nil {
@@ -108,7 +120,7 @@ func (r *TTLPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// nothing is actually deleted would be misleading, so we skip notifications
 	// (and the Secret read) entirely while DryRun is true.
 	var slack *notify.Slack
-	if policy.Spec.Notify != nil && !policy.Spec.DryRun {
+	if policy.Spec.Notify != nil && !dryRun {
 		url, err := r.webhookURL(ctx, policy.Spec.Notify.SlackWebhookSecretRef)
 		if err != nil {
 			// The Secret may not exist yet; record and requeue.
@@ -129,7 +141,7 @@ func (r *TTLPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	engine := reaper.New(nsClient, reaper.Config{
 		Workers:  workers,
-		DryRun:   policy.Spec.DryRun,
+		DryRun:   dryRun,
 		Metrics:  r.Metrics,
 		Notifier: notifier,
 	})
@@ -137,11 +149,11 @@ func (r *TTLPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	result, reapErr := engine.ReapOnce(ctx, now)
 	logger.Info("reap pass complete",
 		"scanned", result.Scanned, "reaped", result.Reaped,
-		"failed", result.Failed, "dryRun", policy.Spec.DryRun)
+		"failed", result.Failed, "dryRun", dryRun)
 
 	// Record status + reap history.
 	policy.Status.Tracked = len(resources)
-	if !policy.Spec.DryRun && result.Reaped > 0 {
+	if !dryRun && result.Reaped > 0 {
 		policy.Status.Reaped += result.Reaped
 		for i := 0; i < result.Reaped; i++ {
 			policy.Status.RecentReaps = append(policy.Status.RecentReaps, metav1.Time{Time: now})
@@ -296,17 +308,22 @@ func (r *TTLPolicyReconciler) setReadyLocal(p *ephemerav1.TTLPolicy, ok bool, re
 		status = metav1.ConditionFalse
 	}
 	meta.SetStatusCondition(&p.Status.Conditions, metav1.Condition{
-		Type:    "Ready",
-		Status:  status,
-		Reason:  reason,
-		Message: msg,
+		Type:               "Ready",
+		Status:             status,
+		Reason:             reason,
+		Message:            msg,
+		ObservedGeneration: p.Generation,
 	})
 }
 
-// SetupWithManager wires the reconciler to watch TTLPolicy objects.
+// SetupWithManager wires the reconciler to watch TTLPolicy objects. The
+// generation-changed predicate drops our own status-only updates (which do not
+// bump .metadata.generation), so writing status never triggers an immediate
+// extra reconcile. Time-based passes still happen via RequeueAfter.
 func (r *TTLPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&ephemerav1.TTLPolicy{}).
+		WithEventFilter(predicate.GenerationChangedPredicate{}).
 		Complete(r)
 }
 

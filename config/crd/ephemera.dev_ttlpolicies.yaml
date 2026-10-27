@@ -59,8 +59,11 @@ spec:
             properties:
               dryRun:
                 default: true
-                description: DryRun, when true, logs and reports what would be reaped
-                  without deleting.
+                description: |-
+                  DryRun, when true, logs and reports what would be reaped without deleting.
+                  Defaults to true. It is a pointer so Go clients can send an explicit
+                  false: a plain bool with omitempty would drop false on the wire and let
+                  API defaulting restore true.
                 type: boolean
               notify:
                 description: |-
@@ -99,9 +102,10 @@ spec:
                 type: object
               selector:
                 description: |-
-                  Selector picks the namespaces this policy governs. An empty selector is
-                  rejected (the policy is marked NotReady and nothing is reaped) rather than
-                  matching everything — you must opt namespaces in explicitly.
+                  Selector further narrows which opted-in namespaces this policy governs.
+                  Note: a namespace is ONLY ever eligible if it also carries the label
+                  ephemera.dev/ephemeral=true (a hard opt-in floor the selector cannot
+                  bypass). An empty selector is rejected (policy marked NotReady).
                 properties:
                   matchExpressions:
                     description: matchExpressions is a list of label selector requirements.
@@ -147,9 +151,13 @@ spec:
                 type: object
                 x-kubernetes-map-type: atomic
               ttl:
-                description: TTL is how long after a namespace's creation it may live
-                  before reaping.
+                description: |-
+                  TTL is how long after a namespace's creation it may live before reaping.
+                  Must be a positive duration; zero or negative values are rejected.
                 type: string
+                x-kubernetes-validations:
+                - message: ttl must be a positive duration
+                  rule: duration(self) > duration('0s')
               workers:
                 description: Workers caps concurrent deletions. Defaults to 4 when
                   unset.

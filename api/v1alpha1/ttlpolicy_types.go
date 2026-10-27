@@ -6,19 +6,25 @@ import (
 
 // TTLPolicySpec defines which namespaces to watch and how long they may live.
 type TTLPolicySpec struct {
-	// Selector picks the namespaces this policy governs. An empty selector is
-	// rejected (the policy is marked NotReady and nothing is reaped) rather than
-	// matching everything — you must opt namespaces in explicitly.
+	// Selector further narrows which opted-in namespaces this policy governs.
+	// Note: a namespace is ONLY ever eligible if it also carries the label
+	// ephemera.dev/ephemeral=true (a hard opt-in floor the selector cannot
+	// bypass). An empty selector is rejected (policy marked NotReady).
 	Selector metav1.LabelSelector `json:"selector"`
 
 	// TTL is how long after a namespace's creation it may live before reaping.
+	// Must be a positive duration; zero or negative values are rejected.
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="duration(self) > duration('0s')",message="ttl must be a positive duration"
 	TTL metav1.Duration `json:"ttl"`
 
 	// DryRun, when true, logs and reports what would be reaped without deleting.
+	// Defaults to true. It is a pointer so Go clients can send an explicit
+	// false: a plain bool with omitempty would drop false on the wire and let
+	// API defaulting restore true.
 	// +kubebuilder:default=true
 	// +optional
-	DryRun bool `json:"dryRun,omitempty"`
+	DryRun *bool `json:"dryRun,omitempty"`
 
 	// Workers caps concurrent deletions. Defaults to 4 when unset.
 	// +kubebuilder:validation:Minimum=1

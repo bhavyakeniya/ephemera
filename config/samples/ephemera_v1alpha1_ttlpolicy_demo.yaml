@@ -1,0 +1,13 @@
+# Demo policy: reaps opted-in namespaces 60s after creation, for real.
+# Use this to SEE the behavior quickly; the other sample uses a realistic 24h TTL
+# and stays in dry-run.
+apiVersion: ephemera.dev/v1alpha1
+kind: TTLPolicy
+metadata:
+  name: demo
+spec:
+  selector:
+    matchLabels:
+      ephemera.dev/ephemeral: "true"
+  ttl: 60s
+  dryRun: false

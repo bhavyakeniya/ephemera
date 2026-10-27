@@ -48,3 +48,7 @@ deploy: install ## Deploy the controller (RBAC + manager) into the current clust
 .PHONY: sample
 sample: ## Apply the example TTLPolicy
 	kubectl apply -f config/samples/
+
+.PHONY: smoke
+smoke: ## Run the live-cluster smoke test (requires a deployed controller)
+	bash test/e2e/smoke.sh

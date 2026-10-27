@@ -111,6 +111,11 @@ func (in *TTLPolicySpec) DeepCopyInto(out *TTLPolicySpec) {
 	*out = *in
 	in.Selector.DeepCopyInto(&out.Selector)
 	out.TTL = in.TTL
+	if in.DryRun != nil {
+		in, out := &in.DryRun, &out.DryRun
+		*out = new(bool)
+		**out = **in
+	}
 	if in.Workers != nil {
 		in, out := &in.Workers, &out.Workers
 		*out = new(int)

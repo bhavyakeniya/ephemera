@@ -27,8 +27,11 @@ func init() {
 
 func main() {
 	var metricsAddr, probeAddr string
+	var enableLeaderElection bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "address the metrics endpoint binds to")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "address the health probe binds to")
+	flag.BoolVar(&enableLeaderElection, "leader-elect", true,
+		"enable leader election so only one manager reconciles at a time (safe rolling updates)")
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -40,6 +43,8 @@ func main() {
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
+		LeaderElection:         enableLeaderElection,
+		LeaderElectionID:       "ephemera.dev",
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
