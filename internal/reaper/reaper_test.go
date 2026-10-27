@@ -3,6 +3,7 @@ package reaper
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -164,6 +165,41 @@ func TestReapOnce_DryRunDeletesNothing(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&m.reaped); got != 1 {
 		t.Errorf("reaped metric = %d, want 1", got)
+	}
+}
+
+// countingNotifier records how many reap notifications were sent.
+type countingNotifier struct{ n int32 }
+
+func (c *countingNotifier) Reaped(context.Context, string) { atomic.AddInt32(&c.n, 1) }
+
+func TestReapOnce_SkippedNotCountedOrNotified(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	fc := newFakeClient([]Resource{
+		res("ok", now.Add(-2*time.Hour), time.Hour),
+		res("skip", now.Add(-2*time.Hour), time.Hour),
+	})
+	// The client decided "skip" is no longer eligible.
+	fc.failOn["skip"] = fmt.Errorf("gone under us: %w", ErrSkipped)
+	m := &countingMetrics{}
+	notifier := &countingNotifier{}
+	r := New(fc, Config{Workers: 2, Logger: quietLogger(), Metrics: m, Notifier: notifier})
+
+	out, err := r.ReapOnce(context.Background(), now)
+	if err != nil {
+		t.Fatalf("a skip must not be an error, got %v", err)
+	}
+	if out.Reaped != 1 || out.Skipped != 1 || out.Failed != 0 {
+		t.Errorf("Result = %+v, want Reaped=1 Skipped=1 Failed=0", out)
+	}
+	if got := atomic.LoadInt32(&m.reaped); got != 1 {
+		t.Errorf("reaped metric = %d, want 1 (skip must not increment)", got)
+	}
+	if got := atomic.LoadInt32(&notifier.n); got != 1 {
+		t.Errorf("notifications = %d, want 1 (skip must not notify)", got)
+	}
+	if fc.wasDeleted("skip") {
+		t.Error("the skipped namespace must not be deleted")
 	}
 }
 

@@ -123,23 +123,24 @@ func (n *NamespaceClient) Delete(ctx context.Context, id string) error {
 	var ns corev1.Namespace
 	if err := n.c.Get(ctx, types.NamespacedName{Name: name}, &ns); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil
+			// Already gone — we did not delete it, so report a skip, not a reap.
+			return fmt.Errorf("%s already absent: %w", name, reaper.ErrSkipped)
 		}
 		return fmt.Errorf("re-fetching namespace %s: %w", name, err)
 	}
 
 	if !n.eligible(&ns, time.Now()) {
 		// No longer a reap target (relabeled, recreated fresh, TTL not met).
-		return nil
+		return fmt.Errorf("%s no longer eligible: %w", name, reaper.ErrSkipped)
 	}
 
 	uid, rv := ns.UID, ns.ResourceVersion
 	opts := client.Preconditions{UID: &uid, ResourceVersion: &rv}
 	if err := n.c.Delete(ctx, &ns, opts); err != nil {
 		// Conflict/NotFound mean the object changed or vanished under us — the
-		// precondition did its job; treat as a no-op rather than an error.
+		// precondition did its job; this is a skip, not a successful reap.
 		if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
-			return nil
+			return fmt.Errorf("%s changed under us: %w", name, reaper.ErrSkipped)
 		}
 		return fmt.Errorf("deleting namespace %s: %w", name, err)
 	}

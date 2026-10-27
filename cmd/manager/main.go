@@ -45,6 +45,11 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "ephemera.dev",
+		// Set the lease namespace explicitly from the downward-API env. Without
+		// it, controller-runtime tries to auto-detect the in-cluster namespace
+		// and fails outside a Pod (e.g. `make run`) — so run locally with
+		// --leader-elect=false.
+		LeaderElectionNamespace: os.Getenv("POD_NAMESPACE"),
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")

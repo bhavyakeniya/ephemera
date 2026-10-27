@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	"github.com/bhavyakeniya/ephemera/internal/reaper"
 )
 
 const selfNS = "ephemera-system"
@@ -67,8 +70,8 @@ func TestDelete_SkipsWhenOptInRemoved(t *testing.T) {
 	c := newClient(t, mkNS("relabeled", 3, map[string]string{"foo": "bar"})) // no opt-in now
 	nc := NewNamespaceClient(c, labels.Everything(), time.Hour, selfNS)
 
-	if err := nc.Delete(context.Background(), idPrefix+"relabeled"); err != nil {
-		t.Fatalf("Delete: %v", err)
+	if err := nc.Delete(context.Background(), idPrefix+"relabeled"); !errors.Is(err, reaper.ErrSkipped) {
+		t.Fatalf("Delete err = %v, want ErrSkipped", err)
 	}
 	if !alive(t, c, "relabeled") {
 		t.Error("namespace without the opt-in label must not be deleted")
@@ -80,8 +83,8 @@ func TestDelete_SkipsWhenNotExpired(t *testing.T) {
 	c := newClient(t, mkNS("young", 0.01, optIn()))
 	nc := NewNamespaceClient(c, labels.Everything(), time.Hour, selfNS)
 
-	if err := nc.Delete(context.Background(), idPrefix+"young"); err != nil {
-		t.Fatal(err)
+	if err := nc.Delete(context.Background(), idPrefix+"young"); !errors.Is(err, reaper.ErrSkipped) {
+		t.Fatalf("Delete err = %v, want ErrSkipped", err)
 	}
 	if !alive(t, c, "young") {
 		t.Error("a not-yet-expired namespace must not be deleted")
@@ -103,11 +106,12 @@ func TestDelete_RefusesProtectedAndSelf(t *testing.T) {
 	}
 }
 
-func TestDelete_IdempotentWhenAbsent(t *testing.T) {
+func TestDelete_AbsentIsSkippedNotReaped(t *testing.T) {
 	c := newClient(t)
 	nc := NewNamespaceClient(c, labels.Everything(), time.Hour, selfNS)
-	if err := nc.Delete(context.Background(), idPrefix+"ghost"); err != nil {
-		t.Errorf("deleting an absent namespace must be a no-op, got %v", err)
+	// Already gone: a skip (we didn't delete it), not a failure and not a reap.
+	if err := nc.Delete(context.Background(), idPrefix+"ghost"); !errors.Is(err, reaper.ErrSkipped) {
+		t.Errorf("deleting an absent namespace must report ErrSkipped, got %v", err)
 	}
 }
 

@@ -149,7 +149,7 @@ func (r *TTLPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	result, reapErr := engine.ReapOnce(ctx, now)
 	logger.Info("reap pass complete",
 		"scanned", result.Scanned, "reaped", result.Reaped,
-		"failed", result.Failed, "dryRun", dryRun)
+		"skipped", result.Skipped, "failed", result.Failed, "dryRun", dryRun)
 
 	// Record status + reap history.
 	policy.Status.Tracked = len(resources)

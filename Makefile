@@ -30,7 +30,7 @@ build: ## Build the manager binary
 
 .PHONY: run
 run: ## Run the controller locally against your current kubeconfig
-	go run ./cmd/manager
+	go run ./cmd/manager --leader-elect=false
 
 .PHONY: docker-build
 docker-build: ## Build the container image
@@ -46,8 +46,12 @@ deploy: install ## Deploy the controller (RBAC + manager) into the current clust
 	kubectl apply -f config/manager.yaml
 
 .PHONY: sample
-sample: ## Apply the example TTLPolicy
-	kubectl apply -f config/samples/
+sample: ## Apply the safe (24h, dry-run) example TTLPolicy
+	kubectl apply -f config/samples/ephemera_v1alpha1_ttlpolicy.yaml
+
+.PHONY: demo
+demo: ## Apply the DESTRUCTIVE 60s demo policy (dryRun: false) — real deletes
+	kubectl apply -f config/samples/ephemera_v1alpha1_ttlpolicy_demo.yaml
 
 .PHONY: smoke
 smoke: ## Run the live-cluster smoke test (requires a deployed controller)

@@ -75,17 +75,17 @@ kind create cluster --name ephemera
 make docker-build && kind load docker-image ephemera:latest --name ephemera
 make deploy                    # CRD, RBAC, manager (with leader election)
 
-# A policy that reaps opted-in namespaces 60s after creation, for real.
-kubectl apply -f config/samples/ephemera_v1alpha1_ttlpolicy_demo.yaml
-
-# This one opts in and will be reaped in ~60s:
+# Create the namespaces FIRST, so they exist when the policy is first reconciled.
+# (The controller watches policies, not namespaces, so a namespace created after
+#  the policy isn't noticed until the next requeue — see Design tradeoffs.)
 kubectl create namespace preview-42
-kubectl label  namespace preview-42 ephemera.dev/ephemeral=true
+kubectl label  namespace preview-42 ephemera.dev/ephemeral=true   # opts in
+kubectl create namespace keep-me                                  # never opts in
 
-# This one never opted in and must survive:
-kubectl create namespace keep-me
+# Now apply the destructive 60s demo policy.
+make demo
 
-kubectl get ns preview-42 -w        # watch it disappear ~60s after creation
+kubectl get ns preview-42 -w        # disappears ~60s after its creation
 kubectl get ns keep-me              # still Active — it never opted in
 ```
 

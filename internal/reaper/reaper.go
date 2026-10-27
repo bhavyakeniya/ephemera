@@ -62,10 +62,18 @@ func New(client ResourceClient, cfg Config) *Reaper {
 // delete failed. Detect it with errors.Is; the individual causes are joined in.
 var ErrPartialFailure = errors.New("one or more resources failed to reap")
 
+// ErrSkipped is returned by ResourceClient.Delete to signal that the resource
+// was intentionally NOT deleted (it changed under us, lost eligibility, or was
+// already gone). The engine treats it as neither a reap nor a failure: it is
+// not counted and no notification is sent. Implementations should wrap it:
+// fmt.Errorf("...: %w", reaper.ErrSkipped).
+var ErrSkipped = errors.New("resource not deleted (no longer eligible)")
+
 // Result summarises a single ReapOnce pass.
 type Result struct {
 	Scanned int // resources listed
-	Reaped  int // successfully reaped (or would-reap in dry-run)
+	Reaped  int // namespaces actually deleted (or would-delete in dry-run)
+	Skipped int // expired but not deleted (changed under us / lost eligibility)
 	Failed  int // delete attempts that errored
 }
 
@@ -83,23 +91,26 @@ func (r *Reaper) ReapOnce(ctx context.Context, now time.Time) (Result, error) {
 
 	jobs := make(chan Resource)
 	var (
-		wg     sync.WaitGroup
-		mu     sync.Mutex
-		reaped int
-		errs   []error
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		reaped  int
+		skipped int
+		errs    []error
 	)
 
 	worker := func() {
 		defer wg.Done()
 		for res := range jobs {
-			if err := r.reapOne(ctx, res); err != nil {
-				mu.Lock()
-				errs = append(errs, err)
-				mu.Unlock()
-				continue
-			}
+			ok, err := r.reapOne(ctx, res)
 			mu.Lock()
-			reaped++
+			switch {
+			case err != nil:
+				errs = append(errs, err)
+			case ok:
+				reaped++
+			default:
+				skipped++
+			}
 			mu.Unlock()
 		}
 	}
@@ -124,7 +135,7 @@ feed:
 	close(jobs)
 	wg.Wait()
 
-	out := Result{Scanned: scanned, Reaped: reaped, Failed: len(errs)}
+	out := Result{Scanned: scanned, Reaped: reaped, Skipped: skipped, Failed: len(errs)}
 	if len(errs) > 0 {
 		return out, errors.Join(append([]error{ErrPartialFailure}, errs...)...)
 	}
@@ -135,27 +146,34 @@ feed:
 }
 
 // reapOne deletes a single resource, honouring dry-run and the per-job timeout.
-func (r *Reaper) reapOne(ctx context.Context, res Resource) error {
+// It returns (reaped, err): reaped is true only when the API actually accepted a
+// deletion; a skip (ErrSkipped from the client) returns (false, nil) and is
+// neither counted nor notified.
+func (r *Reaper) reapOne(ctx context.Context, res Resource) (bool, error) {
 	r.metrics.IncInFlight()
 	defer r.metrics.DecInFlight()
 
 	if r.dryRun {
 		r.log.Info("dry-run: would reap", "id", res.ID, "expired_at", res.ExpiresAt())
 		r.metrics.IncReaped()
-		return nil
+		return true, nil
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
 	if err := r.client.Delete(ctx, res.ID); err != nil {
+		if errors.Is(err, ErrSkipped) {
+			r.log.Info("skipped (no longer eligible)", "id", res.ID)
+			return false, nil
+		}
 		r.metrics.IncErrors()
 		r.log.Error("reap failed", "id", res.ID, "err", err)
-		return fmt.Errorf("reaping %s: %w", res.ID, err)
+		return false, fmt.Errorf("reaping %s: %w", res.ID, err)
 	}
 	r.metrics.IncReaped()
 	r.log.Info("reaped", "id", res.ID)
 	// Fire-and-forget: a notification failure must not fail the reap.
 	r.notifier.Reaped(ctx, res.ID)
-	return nil
+	return true, nil
 }
