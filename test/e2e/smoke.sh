@@ -17,7 +17,8 @@ RUN_LABEL="ephemera.dev/smoke-run=${RUN}"
 POLICY="smoke-${RUN}"
 OPTED="smoke-opted-${RUN}"
 SURVIVOR="smoke-survivor-${RUN}"
-TTL=20s
+TTL_SECS=20
+TTL="${TTL_SECS}s"
 
 cleanup() {
   kubectl delete ttlpolicy "$POLICY" --ignore-not-found >/dev/null 2>&1 || true
@@ -36,7 +37,13 @@ kubectl label namespace "$OPTED" "$RUN_LABEL" ephemera.dev/ephemeral=true >/dev/
 kubectl create namespace "$SURVIVOR" >/dev/null
 kubectl label namespace "$SURVIVOR" "$RUN_LABEL" >/dev/null
 
-echo "== phase 1: dry-run reconciles but deletes nothing =="
+# Wait until both namespaces are PAST their TTL before creating the policy, so
+# the dry-run phase proves dry-run spares an actually-expired namespace (not one
+# that merely hasn't expired yet).
+echo "== waiting ${TTL_SECS}s so namespaces exceed their TTL =="
+sleep $((TTL_SECS + 5))
+
+echo "== phase 1: dry-run reconciles an EXPIRED namespace but deletes nothing =="
 cat <<EOF | kubectl apply -f - >/dev/null
 apiVersion: ephemera.dev/v1alpha1
 kind: TTLPolicy

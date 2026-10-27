@@ -137,8 +137,10 @@ in dry-run.
 
 - Namespaces only (the engine is generic; the Kubernetes adapter is not yet).
 - Slack delivery is best-effort and not retried beyond the next reconcile.
-- End-to-end coverage is a `kind` smoke test; `envtest`-based API tests
-  (defaulting/validation/status round-trips) are a planned next step.
+- End-to-end coverage is a **manual** `kind` smoke test (`make smoke`) — it is
+  not run in CI. Production readiness would require automated integration
+  coverage: `envtest` for API defaulting/validation/status round-trips, and the
+  smoke test wired into a CI job against an ephemeral cluster.
 
 ## Development
 

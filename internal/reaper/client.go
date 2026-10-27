@@ -33,8 +33,12 @@ func (r Resource) IsExpired(now time.Time) bool { return !now.Before(r.ExpiresAt
 type ResourceClient interface {
 	// List returns all resources currently tracked for expiry.
 	List(ctx context.Context) ([]Resource, error)
-	// Delete removes one resource by ID. It must be idempotent: deleting an
-	// already-absent resource returns nil, not an error.
+	// Delete removes one resource by ID. Contract:
+	//   - nil        → the API accepted a deletion (counts as a reap).
+	//   - ErrSkipped → intentionally NOT deleted (already absent, no longer
+	//     eligible, or changed under us); neither counted nor notified. Wrap it:
+	//     fmt.Errorf("...: %w", ErrSkipped).
+	//   - any other error → a real failure.
 	Delete(ctx context.Context, id string) error
 }
 
