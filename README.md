@@ -78,15 +78,21 @@ make deploy                    # CRD, RBAC, manager (with leader election)
 # Create the namespaces FIRST, so they exist when the policy is first reconciled.
 # (The controller watches policies, not namespaces, so a namespace created after
 #  the policy isn't noticed until the next requeue — see Design tradeoffs.)
+
+# preview-42 opts in AND joins the demo -> reaped ~60s after creation.
 kubectl create namespace preview-42
-kubectl label  namespace preview-42 ephemera.dev/ephemeral=true   # opts in
-kubectl create namespace keep-me                                  # never opts in
+kubectl label  namespace preview-42 ephemera.dev/ephemeral=true ephemera.dev/demo=true
+
+# keep-me opts in but is NOT part of the demo -> survives, showing the demo
+# policy is scoped and does not touch every opted-in namespace.
+kubectl create namespace keep-me
+kubectl label  namespace keep-me ephemera.dev/ephemeral=true
 
 # Now apply the destructive 60s demo policy.
 make demo
 
 kubectl get ns preview-42 -w        # disappears ~60s after its creation
-kubectl get ns keep-me              # still Active — it never opted in
+kubectl get ns keep-me              # still Active — opted in, but not in the demo
 ```
 
 Or run the scripted version, which asserts the outcome for you:
@@ -101,7 +107,7 @@ The manager serves Prometheus metrics on `:8080/metrics`:
 
 | metric | meaning |
 | --- | --- |
-| `ephemera_reaped_total` | namespaces reaped |
+| `ephemera_reaped_total` | namespaces reaped (includes would-reap counts during dry-run) |
 | `ephemera_reap_errors_total` | failed reap attempts |
 | `ephemera_reap_in_flight` | reaps currently in progress |
 

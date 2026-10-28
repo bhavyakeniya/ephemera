@@ -1,6 +1,11 @@
-# Demo policy: reaps opted-in namespaces 60s after creation, for real.
+# Demo policy: reaps DEMO namespaces 60s after creation, for real.
 # Use this to SEE the behavior quickly; the other sample uses a realistic 24h TTL
 # and stays in dry-run.
+#
+# It is scoped to a demo-only label (ephemera.dev/demo=true) IN ADDITION to the
+# mandatory opt-in label, so running `make demo` on a real cluster can only ever
+# touch namespaces explicitly marked for the demo — never every opted-in
+# namespace. A demo namespace must therefore carry BOTH labels.
 apiVersion: ephemera.dev/v1alpha1
 kind: TTLPolicy
 metadata:
@@ -9,5 +14,6 @@ spec:
   selector:
     matchLabels:
       ephemera.dev/ephemeral: "true"
+      ephemera.dev/demo: "true"
   ttl: 60s
   dryRun: false
