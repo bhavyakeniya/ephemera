@@ -36,7 +36,8 @@ func (f *fakeClient) List(context.Context) ([]Resource, error) {
 	return f.list, f.listErr
 }
 
-func (f *fakeClient) Delete(ctx context.Context, id string) error {
+func (f *fakeClient) Delete(ctx context.Context, r Resource) error {
+	id := r.ID
 	cur := atomic.AddInt32(&f.curConc, 1)
 	defer atomic.AddInt32(&f.curConc, -1)
 	for { // record peak concurrency

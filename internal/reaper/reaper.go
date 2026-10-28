@@ -162,7 +162,7 @@ func (r *Reaper) reapOne(ctx context.Context, res Resource) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	if err := r.client.Delete(ctx, res.ID); err != nil {
+	if err := r.client.Delete(ctx, res); err != nil {
 		if errors.Is(err, ErrSkipped) {
 			r.log.Info("skipped (no longer eligible)", "id", res.ID)
 			return false, nil

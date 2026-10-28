@@ -33,12 +33,16 @@ const (
 )
 
 // protected namespaces are never reaped, regardless of labels or TTL. This is a
-// hard safety floor independent of the user's selector.
+// hard safety floor independent of the user's selector. ephemera-system (the
+// documented install namespace) is included so the controller's own namespace
+// is protected even when the controller namespace is not configured (e.g. a
+// local run with POD_NAMESPACE unset).
 var protected = map[string]bool{
 	"default":         true,
 	"kube-system":     true,
 	"kube-public":     true,
 	"kube-node-lease": true,
+	"ephemera-system": true,
 }
 
 // NamespaceClient is a reaper.ResourceClient scoped to the namespaces matched by
@@ -87,6 +91,7 @@ func (n *NamespaceClient) List(ctx context.Context) ([]reaper.Resource, error) {
 			ID:        idPrefix + ns.Name,
 			CreatedAt: ns.CreationTimestamp.Time,
 			TTL:       n.ttl,
+			UID:       string(ns.UID),
 		})
 	}
 	return out, nil
@@ -114,8 +119,8 @@ func (n *NamespaceClient) eligible(ns *corev1.Namespace, now time.Time) bool {
 // same name (different UID), modified (e.g. opt-in label removed), or is no
 // longer expired since it was listed, it is NOT deleted. Idempotent: an
 // already-absent namespace is success.
-func (n *NamespaceClient) Delete(ctx context.Context, id string) error {
-	name := strings.TrimPrefix(id, idPrefix)
+func (n *NamespaceClient) Delete(ctx context.Context, r reaper.Resource) error {
+	name := strings.TrimPrefix(r.ID, idPrefix)
 	if n.isProtected(name) {
 		return fmt.Errorf("refusing to delete protected namespace %q", name)
 	}
@@ -127,6 +132,13 @@ func (n *NamespaceClient) Delete(ctx context.Context, id string) error {
 			return fmt.Errorf("%s already absent: %w", name, reaper.ErrSkipped)
 		}
 		return fmt.Errorf("re-fetching namespace %s: %w", name, err)
+	}
+
+	// Identity check: if the object carrying this name is not the one we listed
+	// (deleted and recreated since), skip it. This preserves object identity
+	// from list time, not just the moment of the re-fetch.
+	if r.UID != "" && r.UID != string(ns.UID) {
+		return fmt.Errorf("%s was recreated since listing: %w", name, reaper.ErrSkipped)
 	}
 
 	if !n.eligible(&ns, time.Now()) {

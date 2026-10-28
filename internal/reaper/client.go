@@ -19,6 +19,10 @@ type Resource struct {
 	CreatedAt time.Time
 	// TTL is how long after CreatedAt the resource may live.
 	TTL time.Duration
+	// UID is an opaque identity captured when the resource was listed. The
+	// client uses it at delete time to detect a same-name object that was
+	// recreated since listing, and skip it. Empty means "no identity check".
+	UID string
 }
 
 // ExpiresAt returns the instant the resource becomes eligible for reaping.
@@ -33,13 +37,14 @@ func (r Resource) IsExpired(now time.Time) bool { return !now.Before(r.ExpiresAt
 type ResourceClient interface {
 	// List returns all resources currently tracked for expiry.
 	List(ctx context.Context) ([]Resource, error)
-	// Delete removes one resource by ID. Contract:
+	// Delete removes the given resource (identified by its ID, and its UID when
+	// set). Contract:
 	//   - nil        → the API accepted a deletion (counts as a reap).
 	//   - ErrSkipped → intentionally NOT deleted (already absent, no longer
-	//     eligible, or changed under us); neither counted nor notified. Wrap it:
-	//     fmt.Errorf("...: %w", ErrSkipped).
+	//     eligible, or recreated/changed under us); neither counted nor
+	//     notified. Wrap it: fmt.Errorf("...: %w", ErrSkipped).
 	//   - any other error → a real failure.
-	Delete(ctx context.Context, id string) error
+	Delete(ctx context.Context, r Resource) error
 }
 
 // NextExpiry returns the earliest future expiry among resources. ok is false when

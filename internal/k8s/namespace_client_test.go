@@ -70,7 +70,7 @@ func TestDelete_SkipsWhenOptInRemoved(t *testing.T) {
 	c := newClient(t, mkNS("relabeled", 3, map[string]string{"foo": "bar"})) // no opt-in now
 	nc := NewNamespaceClient(c, labels.Everything(), time.Hour, selfNS)
 
-	if err := nc.Delete(context.Background(), idPrefix+"relabeled"); !errors.Is(err, reaper.ErrSkipped) {
+	if err := nc.Delete(context.Background(), reaper.Resource{ID: idPrefix + "relabeled"}); !errors.Is(err, reaper.ErrSkipped) {
 		t.Fatalf("Delete err = %v, want ErrSkipped", err)
 	}
 	if !alive(t, c, "relabeled") {
@@ -83,7 +83,7 @@ func TestDelete_SkipsWhenNotExpired(t *testing.T) {
 	c := newClient(t, mkNS("young", 0.01, optIn()))
 	nc := NewNamespaceClient(c, labels.Everything(), time.Hour, selfNS)
 
-	if err := nc.Delete(context.Background(), idPrefix+"young"); !errors.Is(err, reaper.ErrSkipped) {
+	if err := nc.Delete(context.Background(), reaper.Resource{ID: idPrefix + "young"}); !errors.Is(err, reaper.ErrSkipped) {
 		t.Fatalf("Delete err = %v, want ErrSkipped", err)
 	}
 	if !alive(t, c, "young") {
@@ -95,10 +95,10 @@ func TestDelete_RefusesProtectedAndSelf(t *testing.T) {
 	c := newClient(t, mkNS("kube-system", 100, optIn()), mkNS(selfNS, 100, optIn()))
 	nc := NewNamespaceClient(c, labels.Everything(), time.Hour, selfNS)
 
-	if err := nc.Delete(context.Background(), idPrefix+"kube-system"); err == nil {
+	if err := nc.Delete(context.Background(), reaper.Resource{ID: idPrefix + "kube-system"}); err == nil {
 		t.Error("must refuse a protected namespace")
 	}
-	if err := nc.Delete(context.Background(), idPrefix+selfNS); err == nil {
+	if err := nc.Delete(context.Background(), reaper.Resource{ID: idPrefix + selfNS}); err == nil {
 		t.Error("must refuse the controller's own namespace")
 	}
 	if !alive(t, c, "kube-system") || !alive(t, c, selfNS) {
@@ -110,7 +110,7 @@ func TestDelete_AbsentIsSkippedNotReaped(t *testing.T) {
 	c := newClient(t)
 	nc := NewNamespaceClient(c, labels.Everything(), time.Hour, selfNS)
 	// Already gone: a skip (we didn't delete it), not a failure and not a reap.
-	if err := nc.Delete(context.Background(), idPrefix+"ghost"); !errors.Is(err, reaper.ErrSkipped) {
+	if err := nc.Delete(context.Background(), reaper.Resource{ID: idPrefix + "ghost"}); !errors.Is(err, reaper.ErrSkipped) {
 		t.Errorf("deleting an absent namespace must report ErrSkipped, got %v", err)
 	}
 }
@@ -118,10 +118,27 @@ func TestDelete_AbsentIsSkippedNotReaped(t *testing.T) {
 func TestDelete_RemovesEligible(t *testing.T) {
 	c := newClient(t, mkNS("doomed", 3, optIn()))
 	nc := NewNamespaceClient(c, labels.Everything(), time.Hour, selfNS)
-	if err := nc.Delete(context.Background(), idPrefix+"doomed"); err != nil {
+	if err := nc.Delete(context.Background(), reaper.Resource{ID: idPrefix + "doomed"}); err != nil {
 		t.Fatal(err)
 	}
 	if alive(t, c, "doomed") {
 		t.Error("an eligible expired namespace should be deleted")
+	}
+}
+
+// A same-name object recreated since listing (different UID) must be skipped.
+func TestDelete_SkipsOnUIDMismatch(t *testing.T) {
+	c := newClient(t, mkNS("recreated", 3, optIn()))
+	nc := NewNamespaceClient(c, labels.Everything(), time.Hour, selfNS)
+
+	err := nc.Delete(context.Background(), reaper.Resource{
+		ID:  idPrefix + "recreated",
+		UID: "stale-uid-from-the-object-we-listed",
+	})
+	if !errors.Is(err, reaper.ErrSkipped) {
+		t.Fatalf("Delete err = %v, want ErrSkipped on UID mismatch", err)
+	}
+	if !alive(t, c, "recreated") {
+		t.Error("a same-name object with a different UID must not be deleted")
 	}
 }
