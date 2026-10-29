@@ -18,12 +18,8 @@ rules:
   resources:
   - ttlpolicies
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - ephemera.dev

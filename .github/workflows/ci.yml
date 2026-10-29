@@ -19,6 +19,11 @@ jobs:
         run: go test -race -count=1 ./...
       - name: build
         run: go build ./...
+      # The dependency backlog is the root cause here, not any single CVE:
+      # without this gate, stale modules only surface when someone audits by
+      # hand. Fails the build on a vulnerability reachable from our code.
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
   lint:
     runs-on: ubuntu-latest

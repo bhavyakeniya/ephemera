@@ -256,7 +256,7 @@ func notifyPolicy(name string, ttl time.Duration, warnBefore time.Duration, cron
 // reconcileAt reconciles with a fixed clock.
 func reconcileAt(t *testing.T, c client.Client, s *runtime.Scheme, name string, now time.Time) ctrl.Result {
 	t.Helper()
-	r := &TTLPolicyReconciler{Client: c, Scheme: s, Namespace: "ephemera-system", Now: func() time.Time { return now }}
+	r := &TTLPolicyReconciler{Client: c, Scheme: s, Namespace: "ephemera-system", AllowInsecureWebhooks: true, Now: func() time.Time { return now }}
 	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: name}})
 	if err != nil {
 		t.Fatalf("reconcile error: %v", err)
@@ -465,4 +465,46 @@ func meta_FindReady(conds []metav1.Condition) metav1.ConditionStatus {
 		}
 	}
 	return metav1.ConditionUnknown
+}
+
+// TestReconcile_InvalidWebhook_NoSecretLeakAndRequeues covers both halves of the
+// invalid-webhook path: the status condition must not carry Secret content, and
+// the policy must stay scheduled so a corrected Secret actually takes effect
+// (Secrets are not watched, so nothing else would wake this policy up).
+func TestReconcile_InvalidWebhook_NoSecretLeakAndRequeues(t *testing.T) {
+	const keyBody = "MIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeK"
+	pem := "-----BEGIN PRIVATE KEY-----\n" + keyBody + "\n-----END PRIVATE KEY-----\n"
+
+	s := testScheme(t)
+	policy := notifyPolicy("leaky", time.Hour, 30*time.Minute, "")
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(policy, webhookSecret(pem),
+			ns("preview", 0.1, map[string]string{"ephemera.dev/ephemeral": "true"})).
+		WithStatusSubresource(&ephemerav1.TTLPolicy{}).
+		Build()
+
+	// AllowInsecureWebhooks must be false here — that's the validating path.
+	r := &TTLPolicyReconciler{Client: c, Scheme: s, Namespace: "ephemera-system"}
+	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "leaky"}})
+	if err != nil {
+		t.Fatalf("reconcile error: %v", err)
+	}
+	if res.RequeueAfter <= 0 {
+		t.Error("RequeueAfter = 0: a corrected Secret would never be re-read")
+	}
+
+	var got ephemerav1.TTLPolicy
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "leaky"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if meta_FindReady(got.Status.Conditions) != metav1.ConditionFalse {
+		t.Error("policy should be NotReady with an invalid webhook URL")
+	}
+	for _, cond := range got.Status.Conditions {
+		for _, frag := range []string{keyBody, "BEGIN PRIVATE KEY"} {
+			if strings.Contains(cond.Message, frag) {
+				t.Errorf("status condition %q leaks Secret content %q: %s", cond.Type, frag, cond.Message)
+			}
+		}
+	}
 }

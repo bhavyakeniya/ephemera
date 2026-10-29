@@ -100,6 +100,29 @@ func TestPost_ErrorDoesNotLeakWebhookURL(t *testing.T) {
 	}
 }
 
+func TestValidateWebhookURL(t *testing.T) {
+	ok := []string{
+		"https://hooks.slack.com/services/T000/B000/XXXX",
+	}
+	bad := []string{
+		"http://hooks.slack.com/services/x", // not https
+		"https://evil.example.com/webhook",  // not an approved host
+		"https://127.0.0.1:1/services/x",    // loopback (SSRF)
+		"ftp://hooks.slack.com/x",           // wrong scheme
+		"://nonsense",                       // unparseable
+	}
+	for _, u := range ok {
+		if err := ValidateWebhookURL(u); err != nil {
+			t.Errorf("ValidateWebhookURL(%q) = %v, want nil", u, err)
+		}
+	}
+	for _, u := range bad {
+		if err := ValidateWebhookURL(u); err == nil {
+			t.Errorf("ValidateWebhookURL(%q) = nil, want error", u)
+		}
+	}
+}
+
 func TestPost_RejectsRedirect(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "http://example.com/elsewhere", http.StatusFound)
@@ -116,5 +139,35 @@ func TestPost_Non200IsError(t *testing.T) {
 	s := NewSlack(srv.URL, quiet())
 	if err := s.Warn(context.Background(), "x", time.Now()); err == nil {
 		t.Fatal("expected error on non-200 response")
+	}
+}
+
+// TestValidateWebhookURL_NeverEchoesInput is the security test for the
+// privilege-escalation path: the caller writes this error into a TTLPolicy
+// status condition, so any echo of the Secret-derived input would let a policy
+// author read Secrets they have no RBAC for. url.Parse's own error embeds the
+// full input, which is exactly why it must not be wrapped.
+func TestValidateWebhookURL_NeverEchoesInput(t *testing.T) {
+	const keyBody = "MIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeK"
+	cases := map[string]string{
+		"pem private key":  "-----BEGIN PRIVATE KEY-----\n" + keyBody + "\n-----END PRIVATE KEY-----\n",
+		"attacker host":    "https://evil.example.com/hook",
+		"plaintext scheme": "http://hooks.slack.com/services/T0/B0/s3cr3t-token",
+		"loopback":         "http://127.0.0.1:9999/x",
+	}
+	// Fragments that must never surface in an error, whichever input produced it.
+	secrets := []string{keyBody, "BEGIN PRIVATE KEY", "evil.example.com", "s3cr3t-token", "127.0.0.1"}
+
+	for name, in := range cases {
+		err := ValidateWebhookURL(in)
+		if err == nil {
+			t.Errorf("%s: ValidateWebhookURL(...) = nil, want an error", name)
+			continue
+		}
+		for _, frag := range secrets {
+			if strings.Contains(err.Error(), frag) {
+				t.Errorf("%s: error leaks secret fragment %q: %v", name, frag, err)
+			}
+		}
 	}
 }

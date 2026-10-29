@@ -26,8 +26,10 @@ type TTLPolicySpec struct {
 	// +optional
 	DryRun *bool `json:"dryRun,omitempty"`
 
-	// Workers caps concurrent deletions. Defaults to 4 when unset.
+	// Workers caps concurrent deletions. Defaults to 4 when unset. Bounded to
+	// avoid allocating an unreasonable number of goroutines.
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
 	// +optional
 	Workers *int `json:"workers,omitempty"`
 
@@ -48,7 +50,10 @@ type NotifySpec struct {
 
 	// WarnBefore sends a heads-up this long before a namespace is reaped.
 	// Defaults to 24h. The warning is skipped entirely when WarnBefore is >=
-	// the policy TTL, since there is then no distinct pre-expiry window.
+	// the policy TTL, since there is then no distinct pre-expiry window. Must be
+	// a parseable, non-negative duration (validated at admission so a malformed
+	// value cannot break typed decoding of the policy list).
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="warnBefore must be a non-negative duration"
 	// +optional
 	WarnBefore *metav1.Duration `json:"warnBefore,omitempty"`
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,6 +21,8 @@ type fakeClient struct {
 	listErr error
 	failOn  map[string]error
 	delay   time.Duration
+	// onDelete, when set, is called at the top of each Delete.
+	onDelete func()
 
 	mu      sync.Mutex
 	deleted map[string]bool
@@ -38,6 +41,9 @@ func (f *fakeClient) List(context.Context) ([]Resource, error) {
 
 func (f *fakeClient) Delete(ctx context.Context, r Resource) error {
 	id := r.ID
+	if f.onDelete != nil {
+		f.onDelete()
+	}
 	cur := atomic.AddInt32(&f.curConc, 1)
 	defer atomic.AddInt32(&f.curConc, -1)
 	for { // record peak concurrency
@@ -300,5 +306,93 @@ func TestNextExpiry(t *testing.T) {
 
 	if _, ok := NextExpiry([]Resource{res("gone", now.Add(-time.Hour), time.Minute)}, now); ok {
 		t.Error("expected ok=false when nothing is pending")
+	}
+}
+
+// TestNew_ClampsWorkers pins the hard goroutine bound: a policy that slips a
+// huge worker count past admission must still not spawn that many goroutines.
+func TestNew_ClampsWorkers(t *testing.T) {
+	if got := New(newFakeClient(nil), Config{Workers: 1_000_000, Logger: quietLogger()}).workers; got != MaxWorkers {
+		t.Errorf("workers = %d, want clamp to %d", got, MaxWorkers)
+	}
+}
+
+// TestReapOnce_PoolSizedToWork checks the pool is no larger than the expired
+// set: one expired namespace must not start MaxWorkers goroutines.
+func TestReapOnce_PoolSizedToWork(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	resources := []Resource{res("expired", now.Add(-2*time.Hour), time.Hour)}
+	for i := 0; i < 20; i++ { // plenty of live namespaces that are not work
+		resources = append(resources, res(fmt.Sprintf("live-%d", i), now, time.Hour))
+	}
+	fc := newFakeClient(resources)
+
+	base := runtime.NumGoroutine()
+	var peak int
+	fc.onDelete = func() { peak = runtime.NumGoroutine() }
+
+	if _, err := New(fc, Config{Workers: MaxWorkers, Logger: quietLogger()}).
+		ReapOnce(context.Background(), now); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// One unit of work => ~1 worker. Allow slack for test-runtime noise, but
+	// anything near MaxWorkers means the pool ignored the size of the work.
+	if peak-base > 10 {
+		t.Errorf("goroutines grew by %d for 1 expired resource; pool not sized to work", peak-base)
+	}
+}
+
+// slowNotifier simulates a sluggish Slack endpoint. It honours ctx, so a
+// cancelled notification budget unblocks it immediately.
+type slowNotifier struct {
+	delay time.Duration
+	sent  int32
+}
+
+func (s *slowNotifier) Reaped(ctx context.Context, _ string) {
+	select {
+	case <-time.After(s.delay):
+		atomic.AddInt32(&s.sent, 1)
+	case <-ctx.Done():
+	}
+}
+
+// TestReapOnce_NotifyBudgetBoundsPass pins the fix for notifications blocking
+// reconciliation. Notifications are per-delete and synchronous, so their cost
+// used to scale with the number of deletions; one pass-wide budget caps it.
+// Deletes must still all complete — only the best-effort notifications drop.
+func TestReapOnce_NotifyBudgetBoundsPass(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	const count = 20
+	var resources []Resource
+	for i := 0; i < count; i++ {
+		resources = append(resources, res(fmt.Sprintf("ns-%d", i), now.Add(-2*time.Hour), time.Hour))
+	}
+	fc := newFakeClient(resources)
+	notifier := &slowNotifier{delay: 200 * time.Millisecond}
+
+	// Unbudgeted cost: ceil(20/2) * 200ms = 2s. Budget: 300ms.
+	r := New(fc, Config{
+		Workers:      2,
+		Logger:       quietLogger(),
+		Notifier:     notifier,
+		NotifyBudget: 300 * time.Millisecond,
+	})
+
+	start := time.Now()
+	out, err := r.ReapOnce(context.Background(), now)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Reaped != count {
+		t.Errorf("Reaped = %d, want %d: the budget must drop notifications, not deletes", out.Reaped, count)
+	}
+	if elapsed > time.Second {
+		t.Errorf("pass took %v; notification cost is not bounded by the budget", elapsed)
+	}
+	if sent := atomic.LoadInt32(&notifier.sent); sent >= count {
+		t.Errorf("sent = %d of %d; expected the budget to drop some notifications", sent, count)
 	}
 }

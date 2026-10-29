@@ -74,6 +74,11 @@ spec:
       serviceAccountName: ephemera-manager
       securityContext:
         runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: tmp
+          emptyDir: {}
       containers:
         - name: manager
           image: ephemera:latest
@@ -105,7 +110,11 @@ spec:
               memory: 64Mi
             limits:
               memory: 128Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]

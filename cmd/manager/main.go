@@ -28,10 +28,13 @@ func init() {
 func main() {
 	var metricsAddr, probeAddr string
 	var enableLeaderElection bool
+	var allowInsecureWebhooks bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "address the metrics endpoint binds to")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "address the health probe binds to")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", true,
 		"enable leader election so only one manager reconciles at a time (safe rolling updates)")
+	flag.BoolVar(&allowInsecureWebhooks, "allow-insecure-webhooks", false,
+		"allow non-HTTPS / non-Slack webhook URLs (DEV/TESTING ONLY)")
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -62,8 +65,9 @@ func main() {
 		Metrics: metrics.NewPrometheus(),
 		// Read webhook Secrets directly from the API (uncached), so we need only
 		// "get" on Secrets in our own namespace, not a cluster-wide Secret watch.
-		SecretReader: mgr.GetAPIReader(),
-		Namespace:    os.Getenv("POD_NAMESPACE"),
+		SecretReader:          mgr.GetAPIReader(),
+		Namespace:             os.Getenv("POD_NAMESPACE"),
+		AllowInsecureWebhooks: allowInsecureWebhooks,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TTLPolicy")
 		os.Exit(1)

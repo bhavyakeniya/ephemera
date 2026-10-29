@@ -36,6 +36,9 @@ const (
 	defaultWarnBefore = 24 * time.Hour
 	// digestWindow is the lookback/lookahead used by the digest counts.
 	digestWindow = 24 * time.Hour
+	// warnBudget bounds the total time spent sending warnings in one pass, so
+	// slow notifications cannot starve the reconcile worker.
+	warnBudget = 15 * time.Second
 	// nsPrefix mirrors the reaper.Resource ID prefix used by internal/k8s.
 	nsPrefix = "namespace/"
 )
@@ -52,11 +55,16 @@ type TTLPolicyReconciler struct {
 	SecretReader client.Reader
 	// Namespace is the controller's own namespace, where webhook Secrets live.
 	Namespace string
+	// AllowInsecureWebhooks disables the HTTPS + Slack-host check on webhook
+	// URLs. Dev/testing only (e.g. posting to a local mock); never in prod.
+	AllowInsecureWebhooks bool
 	// Now is injectable for deterministic tests; defaults to time.Now.
 	Now func() time.Time
 }
 
-// +kubebuilder:rbac:groups=ephemera.dev,resources=ttlpolicies,verbs=get;list;watch;create;update;patch;delete
+// Least privilege: the controller only reads TTLPolicy objects and writes the
+// status subresource — it never creates, mutates, or deletes a policy itself.
+// +kubebuilder:rbac:groups=ephemera.dev,resources=ttlpolicies,verbs=get;list;watch
 // +kubebuilder:rbac:groups=ephemera.dev,resources=ttlpolicies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;delete
 // NOTE: Secret access is granted via a namespaced Role (config/manager.yaml),
@@ -127,6 +135,21 @@ func (r *TTLPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			r.setReady(ctx, &policy, false, "NotifySecretError", err.Error())
 			return ctrl.Result{}, err
 		}
+		if !r.AllowInsecureWebhooks {
+			if err := notify.ValidateWebhookURL(url); err != nil {
+				// Not a transient error, so don't return it and hot-loop on
+				// backoff — but the fix lives in the Secret, not the policy
+				// spec, and we deliberately do not watch Secrets (that would
+				// need list/watch on Secrets; we hold only "get" on one). A
+				// corrected Secret bumps nothing we observe, so without a
+				// timed requeue the policy would stay wedged forever. Poll.
+				//
+				// notify.ValidateWebhookURL returns rule-only sentinel errors:
+				// never put a Secret-derived value in a status condition.
+				r.setReady(ctx, &policy, false, "WebhookURLInvalid", err.Error())
+				return ctrl.Result{RequeueAfter: defaultRequeue}, nil
+			}
+		}
 		slack = notify.NewSlack(url, nil)
 	}
 
@@ -194,8 +217,19 @@ func (r *TTLPolicyReconciler) sendWarnings(ctx context.Context, policy *ephemera
 		return
 	}
 	logger := log.FromContext(ctx)
+
+	// Bound the whole warning phase so slow/stalled Slack requests cannot
+	// monopolise the single reconcile worker. Any warnings not sent within the
+	// budget are left unmarked and retried on the next pass.
+	wctx, cancel := context.WithTimeout(ctx, warnBudget)
+	defer cancel()
+
 	warned := toSet(policy.Status.Warned)
 	for _, res := range resources {
+		if wctx.Err() != nil {
+			logger.Info("warning budget exhausted; deferring remaining warnings to next pass")
+			break
+		}
 		name := nsName(res.ID)
 		if warned[name] || res.IsExpired(now) {
 			continue
@@ -203,7 +237,7 @@ func (r *TTLPolicyReconciler) sendWarnings(ctx context.Context, policy *ephemera
 		if now.Before(res.ExpiresAt().Add(-wb)) {
 			continue // not yet within the warning window
 		}
-		if err := slack.Warn(ctx, name, res.ExpiresAt()); err != nil {
+		if err := slack.Warn(wctx, name, res.ExpiresAt()); err != nil {
 			logger.Error(err, "slack warning failed", "namespace", name)
 			continue // leave unwarned so we retry next pass
 		}

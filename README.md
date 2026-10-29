@@ -14,7 +14,9 @@ Teams spin up throwaway namespaces per PR, per demo, per test run. Nobody delete
 them. Weeks later the cluster is full of `preview-*` zombies holding quota,
 secrets, and load balancers. `ephemera` lets a platform team declare "namespaces
 with this label die after N hours" once, as a custom resource, and then enforces
-it — with guard rails so it can never become the thing that deletes production.
+it — with layered guard rails (dry-run default, explicit opt-in, protected
+namespaces, identity-safe deletes) that make deleting an unintended namespace
+hard, so it is safe to adopt incrementally.
 
 ## Safety guarantees
 
@@ -143,10 +145,21 @@ in dry-run.
 
 - Namespaces only (the engine is generic; the Kubernetes adapter is not yet).
 - Slack delivery is best-effort and not retried beyond the next reconcile.
+  Both notification phases are time-budgeted so they cannot hold the
+  reconcile worker (15s for pre-expiry warnings, 10s per pass for reap
+  notifications); past the budget, notifications are dropped rather than
+  delaying other policies. Reaping itself is never affected.
+- An invalid webhook Secret marks the policy NotReady and is re-checked on
+  the normal requeue interval. Secrets are deliberately not watched, so the
+  controller needs only `get` on one Secret rather than Secret list/watch.
 - End-to-end coverage is a **manual** `kind` smoke test (`make smoke`) — it is
   not run in CI. Production readiness would require automated integration
   coverage: `envtest` for API defaulting/validation/status round-trips, and the
   smoke test wired into a CI job against an ephemeral cluster.
+- The `/metrics` endpoint is currently unauthenticated — expose it only on a
+  trusted network, or add authn/authz, before production use.
+- Base images and CI actions are pinned by tag, not by digest; digest-pinning
+  is the stronger supply-chain posture.
 
 ## Development
 

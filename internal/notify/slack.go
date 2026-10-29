@@ -19,6 +19,47 @@ import (
 	"github.com/bhavyakeniya/ephemera/internal/reaper"
 )
 
+// allowedWebhookHosts is the allowlist of hosts a webhook URL may target.
+// Slack Incoming Webhooks are always https://hooks.slack.com/...
+var allowedWebhookHosts = map[string]bool{"hooks.slack.com": true}
+
+// Validation errors are deliberately content-free. The value being validated is
+// read out of a Secret, and the caller surfaces this error in the TTLPolicy's
+// status condition — which any principal with "get ttlpolicies" can read. Any
+// echo of the input there (including url.Parse's own error, which embeds the
+// full input) turns "may create a TTLPolicy" into "may read any Secret in the
+// controller's namespace": point a policy at tls.key, let parsing fail, read the
+// key back out of status. Keep these messages describing the *rule*, never the
+// value. The detail an operator needs is which rule failed, not what was in the
+// Secret.
+var (
+	ErrWebhookUnparseable    = errors.New("webhook secret does not contain a valid URL")
+	ErrWebhookNotHTTPS       = errors.New("webhook URL must use https")
+	ErrWebhookHostNotAllowed = errors.New("webhook URL must target an approved Slack host (hooks.slack.com)")
+)
+
+// ValidateWebhookURL enforces that a webhook URL is HTTPS and targets an
+// approved Slack host. Without this, anyone able to write the referenced Secret
+// could redirect notifications (and the request they carry) to an arbitrary
+// destination — conditional SSRF. The controller calls this before sending,
+// unless explicitly run with insecure webhooks allowed (dev/testing only).
+//
+// It returns one of the sentinel errors above and never the input; see the note
+// on those errors for why that matters.
+func ValidateWebhookURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ErrWebhookUnparseable
+	}
+	if u.Scheme != "https" {
+		return ErrWebhookNotHTTPS
+	}
+	if !allowedWebhookHosts[u.Hostname()] {
+		return ErrWebhookHostNotAllowed
+	}
+	return nil
+}
+
 // Slack posts plain-text messages to a Slack Incoming Webhook URL.
 type Slack struct {
 	webhookURL string
@@ -37,7 +78,7 @@ func NewSlack(webhookURL string, log *slog.Logger) *Slack {
 	return &Slack{
 		webhookURL: webhookURL,
 		http: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: 5 * time.Second,
 			// Don't follow redirects: a real Slack webhook never redirects, and
 			// following one could deliver the payload to an arbitrary host and
 			// report a 200 from there as success. Returning the 3xx response
